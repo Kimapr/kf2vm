@@ -16,7 +16,7 @@ do
 	end
 
 	local function JUDGE_INTEGER_BITLIB_SUITABILITY_FOR_USAGE(bit)
-		return (bit and bit.lshift and bit.rshift and bit.arshift
+		return (bit and bit.lshift and bit.rshift
 		            and bit.band   and bit.bnot   and bit.bxor)
 			and bit or nil
 	end
@@ -34,9 +34,6 @@ do
 	if l53ls then
 		local bit = assert((loadstring or load)(([[
 			local bit = {}
-			function bit.arshift(n,s)
-				return (n >> s) | ((~((n>>(BITWIDTH-1))-1)) << (BITWIDTH-s))
-			end
 			function bit.bnot(n)
 				return ~n
 			end
@@ -159,9 +156,6 @@ function lib.sign(a)
 	local mai = bwm[a.bitwidth].mai
 	local smsh = bwm[a.bitwidth].smsh
 	local sign = a[mai]
-	--sign = bit.band(bit.rshift(sign,smsh),1)
-	--sign = bit.arshift(bit.lshift(sign,BITWIDTH-1),BITWIDTH-1)
-	--sign = bit.band(sign, uimax)
 	sign = bit.band(bit.rshift(sign,smsh),1)
 	sign = bit.bnot(sign - 1)
 	return sign
