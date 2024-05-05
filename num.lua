@@ -16,7 +16,7 @@ do
 	end
 
 	local function JUDGE_INTEGER_BITLIB_SUITABILITY_FOR_USAGE(bit)
-		return (bit and bit.lshift and bit.rshift
+		return (bit and bit.lshift and bit.rshift and bit.bor
 		            and bit.band   and bit.bnot   and bit.bxor)
 			and bit or nil
 	end
@@ -46,7 +46,7 @@ do
 	end
 
 	bit = bitlibs[1]
-	BITWIDTH = JUDGE_INTEGER_BITWIDTH(bit)
+	BITWIDTH = bit and JUDGE_INTEGER_BITWIDTH(bit)
 	for n = 2, #bitlibs do
 		local libx = bitlibs[n]
 		local bw = JUDGE_INTEGER_BITWIDTH(libx)
@@ -58,40 +58,27 @@ end
 if not bit then
 	error("no bitlib")
 end
---[[
-do
-	local jbit = bit
-	for k,f in pairs(jbit) do
-		if type(f)=="function" then
-			local m=2^32
-			local of=f f=function(...)
-				return of(...) % m
-			end
-		end
-		bit[k]=f
-	end
-end
---]] -- questionable, sus amogus even
 
 lib.bit = bit
+
+local     lshift,     rshift,     band,     bnot,     bxor,     bor
+=     bit.lshift, bit.rshift, bit.band, bit.bnot, bit.bxor, bit.bor
 
 lib.__index = lib
 
 lib.BITWIDTH = BITWIDTH
-local SIGNED = bit.bnot(0) == -1
+local SIGNED = bnot(0) == -1
 lib.SIGNED = SIGNED
-print ("BITWIDTH="..BITWIDTH, SIGNED and 'signed' or "unsigned")
 
-local uibiw = 8
---local uibiw = BITWIDTH
-local uimax = bit.bor(bit.lshift(1,uibiw) - 1, 0)
+local uibiw = BITWIDTH
+local uimax = bor(lshift(1,uibiw) - 1, 0)
 if uimax == 0 then
-	uimax = bit.bnot(0)
+	uimax = bnot(0)
 end
 
-local hibiw = bit.rshift(uibiw, 1)
-local himlo = bit.lshift(1, hibiw) - 1
-local himhi = bit.lshift(himlo, hibiw)
+local hibiw = rshift(uibiw, 1)
+local himlo = lshift(1, hibiw) - 1
+local himhi = lshift(himlo, hibiw)
 
 local temps = setmetatable({},{__index = function(self,bitwidth)
 	self[bitwidth] = setmetatable({},{__index = function(self, k)
@@ -109,30 +96,220 @@ local consts = setmetatable({},{__index = function(self,bitwidth)
 	return self[bitwidth]
 end})
 
+local function counted(f)
+	local cc=0
+	return function(...)
+		cc=cc+1
+		return f(cc,...)
+	end
+end
+
+local debugging = false
+local function debugged(n,f)
+	if not debugging then return f end
+	return function(...)
+		print(n,...)
+		return f(...)
+	end
+end
+
 local bwm = setmetatable({},{__index = function(self,bitwidth)
 	local mai = math.ceil(bitwidth / uibiw)
 	local smsh = bitwidth - (mai-1)*uibiw - 1
-	local mama = (smsh+1) < uibiw and bit.bor(bit.lshift(1, smsh + 1)-1,0) or uimax
+	local mama = (smsh+1) < uibiw and bor(lshift(1, smsh + 1)-1,0) or uimax
+	local meta = setmetatable({}, lib)
+	meta.__index = meta
+	local split = function(n)
+		return ("band(N, HIMLO), rshift(band(N, HIMHI), HIBIW)")
+			:gsub("N",n)
+			:gsub("HIMLO",himlo)
+			:gsub("HIMHI",himhi)
+			:gsub("HIBIW",hibiw)
+	end
+	local function fixmama(a,b)
+		a=a or "" b=b or ""
+		return mama ~= uimax
+			and a.."\nto["..mai.."] = band(to["..mai.."], "..mama..")\n"..b.."\n"
+			or  ""
+	end
+	local function fixsize(a,b,...)
+		if not a then return "" end
+		return ("assert("..a..".bitwidth == "..bitwidth..",'bitwidth mismatch')")..fixsize(b,...)
+	end
+	local function fixui(a)
+		return uibiw ~= BITWIDTH
+			and "band("..a..","..uimax..")"
+			or a
+	end
+	local function add()
+		return [[
+			local carry = carry or 0
+			local an,ab
+			local alo,ahi,blo,bhi
+			local olo,ohi
+			]]..("."):rep(mai):gsub('.',counted(function(i)
+				return [[
+					an,ab = a[]]..i..[[],b[]]..i..[[]
+					alo,ahi = ]]..split('an')..[[ 
+					blo,bhi = ]]..split('ab')..[[ 
+					olo = alo + blo + carry
+					olo, carry = ]]..split('olo')..[[ 
+					ohi = ahi + bhi + carry
+					blo, carry = ]]..split('blo')..[[ 
+					to[]]..i..[[] = olo + lshift(ohi, ]]..hibiw..[[)
+				]]..(mama ~= uimax
+				and "carry = lshift(to["..mai.."],"..(smsh+1)..")"
+				or "")
+			end))..[[
+			]]..fixmama()..[[
+		]]
+	end
+	local function bnot()
+		return ("."):rep(mai):gsub('.',counted(function(i)
+			return [[
+				to[]]..i..[[] = ]]..fixui([[bnot(a[]]..i..[[])]])..[[ 
+			]]
+		end))..fixmama()..[[ 
+		]]
+	end
+	local function binop(name)
+		return ("."):rep(mai):gsub('.',counted(function(i)
+			return [[
+				to[]]..i..[[] = ]]..fixui(name..[[(a[]]..i..[[],b[]]..i..[[])]])..[[ 
+			]]
+		end))..fixmama()..[[ 
+		]]
+	end
 	self[bitwidth] = {
 		mama = mama,
 		mai = mai,
 		smsh = smsh,
+		meta = meta,
 	}
+	local function tshift(f,a,b)
+		return [[
+			to = to or lib.new(0, ]]..bitwidth..[[)
+			if n == to then n=n:movzx(shtmp) end
+			s = type(s) == "number" and s or s[1]
+			]]..fixsize('n','to')..[[ 
+			local ish,shi = floor(s / ]]..uibiw..[[), s % ]]..uibiw..[[ 
+			]]..(a or "")..[[ 
+			]]..("."):rep(mai):gsub('.',counted(f))..[[ 
+			]]..fixmama()..[[ 
+			]]..(b or "")..[[ 
+			return to
+		]]
+	end
+	assert((debugged("(load)",load or loadstring))([[
+		local meta, bit, lib = ...
+		local     lshift,     rshift,     band,     bnot,     bxor,     bor
+		=     bit.lshift, bit.rshift, bit.band, bit.bnot, bit.bxor, bit.bor
+		meta.add = function(a, b, to, carry)
+			to = to or lib.new(0, ]]..bitwidth..[[)
+			]]..fixsize('a','b','to')..[[ 
+			]]..add()..[[ 
+			return to, carry
+		end
+		local subn = lib.new(0,]]..bitwidth..[[)
+		local one = lib.new(1,]]..bitwidth..[[)
+		meta.bnot = function(a, to)
+			to = to or lib.new(0, ]]..bitwidth..[[)
+			]]..fixsize('a','to')..[[ 
+			]]..bnot()..[[ 
+			return to
+		end
+		]]..("band;bor;bxor;"):gsub("(.-);",function(n)
+			return [[
+				meta.]]..n..[[ = function(a, b, to)
+					to = to or lib.new(0, ]]..bitwidth..[[)
+					]]..fixsize('a','to')..[[ 
+					]]..binop(n)..[[ 
+					return to
+				end
+			]]
+		end)..[[
+		meta.negate = function(a, to)
+			local b = one
+			]]..bnot()..[[ 
+			a = to
+			local carry = 0
+			]]..add()..[[ 
+			return to
+		end
+		meta.sub = function(a, b, to, carry)
+			to = to or lib.new(0, ]]..bitwidth..[[)
+			]]..fixsize('a','b','to')..[[ 
+			do
+				local a,b,to = b,one,subn
+				]]..bnot()..[[ 
+				a = to
+				local carry = 0
+				]]..add()..[[ 
+			end
+			b = subn
+			]]..add()..[[ 
+			return to, carry
+		end
+		local shtmp = lib.new(0, ]]..bitwidth..[[)
+		local floor = math.floor
+		meta.lshift = function(n,s,to)
+			]]..tshift(function(i)
+				return [[
+					to[]]..i..[[] = bor(
+						rshift(n[]]..(i-1)..[[-ish]or 0,shi),
+						]]..fixui([[shi~=0 and lshift(n[]]..(i)..[[-ish]or 0,]]..uibiw..[[-shi)]])..[[ 
+					)
+				]]
+			end)..[[ 
+		end
+		meta.rshift = function(n,s,to)
+			]]..tshift(function(i)
+				return [[
+					to[]]..i..[[] = bor(
+						rshift(n[]]..i..[[+ish]or 0,shi),
+						]]..fixui([[shi~=0 and lshift(n[]]..(i+1)..[[+ish]or 0,]]..uibiw..[[-shi)]])..[[ 
+					)
+				]]
+			end)..[[ 
+		end
+		meta.arshift = function(n,s,to)
+			]]..tshift(function(i)
+				return [[
+					to[]]..i..[[] = bor(
+						rshift(n[]]..i..[[+ish]or sign,shi),
+						]]..fixui([[shi~=0 and lshift(n[]]..(i+1)..[[+ish]or sign,]]..uibiw..[[-shi)]])..[[ 
+					)
+				]]
+			end,[[
+				local sign = n[]]..mai..[[]
+				sign = band(rshift(sign,]]..smsh..[[),1)
+				sign = ]]..fixui([[bnot(sign - 1)]])..[[ 
+				]]..(mama ~= uimax and "n["..mai.."] = bor(n["..mai.."],band(sign,bxor("..mama..","..uimax..")))" or "")..[[ 
+			]],[[
+				]]..fixmama("n,to = to,n","n,to = to,n")..[[ 
+			]])..[[ 
+		end
+	]]))(meta,bit,lib)
 	return self[bitwidth]
 end})
 
 function lib.new(n,bitwidth)
 	local w = bitwidth -- bitwidth is an epic word but i prefer short names
+	local obj = setmetatable({}, bwm[bitwidth].meta)
+	obj.bitwidth = bitwidth
+	return obj:from_lnum(n)
+end
+
+function lib.from_lnum(obj,n)
+	local bitwidth = obj.bitwidth
 	local flip = false
 	if n<0 then n,flip = -n, not flip end
 	n = math.floor(n)
-	local obj = setmetatable({}, lib)
 	for i = 1, bwm[bitwidth].mai do
-		obj[i] = bit.band(n,uimax)
-		n = math.floor(n / uimax)
+		obj[i] = band(n,uimax)
+		n = math.floor(n / (2^uibiw))
 	end
-	obj.bitwidth = bitwidth
-	obj[bwm[bitwidth].mai] = bit.band(obj[bwm[bitwidth].mai], bwm[bitwidth].mama)
+	obj[bwm[bitwidth].mai] = band(obj[bwm[bitwidth].mai], bwm[bitwidth].mama)
 	if flip then obj:negate(obj) end
 	return obj
 end
@@ -149,39 +326,42 @@ function lib.negate(n,to)
 end
 
 local function split(n)
-	return bit.band(n, himlo), bit.rshift(bit.band(n, himhi), hibiw)
+	return band(n, himlo), rshift(band(n, himhi), hibiw)
 end
 
 function lib.sign(a)
 	local mai = bwm[a.bitwidth].mai
 	local smsh = bwm[a.bitwidth].smsh
 	local sign = a[mai]
-	sign = bit.band(bit.rshift(sign,smsh),1)
-	sign = bit.bnot(sign - 1)
+	sign = band(rshift(sign,smsh),1)
+	sign = band(bnot(sign - 1),uimax)
 	return sign
 end
 
-function lib.add(a,b,to)
+function lib.add(a,b,to,carry)
 	to = to or lib.new(0, a.bitwidth)
 	a:assure_eqbits(b,to)
 	local mai = bwm[to.bitwidth].mai
 	local mama = bwm[to.bitwidth].mama
-	local carry = 0
+	local carry = carry or 0
 	for i = 1, mai do
 		local alo, ahi = split(a[i])
 		local blo, bhi = split(b[i])
 		local olo, ohi
 		olo, carry = split(alo + blo + carry)
 		ohi, carry = split(ahi + bhi + carry)
-		to[i] = olo + bit.lshift(ohi, hibiw)
+		to[i] = olo + lshift(ohi, hibiw)
 	end
-	to[mai] = bit.band(to[mai], mama)
+	if mama ~= uimax then
+		carry = lshift(to[mai], bwm[to.bitwidth].smsh + 1)
+	end
+	to[mai] = band(to[mai], mama)
 	return to,carry
 end
 
-function lib.sub(a,b,to)
+function lib.sub(a,b,to,carry)
 	local b = b:negate(temps[b.bitwidth].subn)
-	return a:add(b,to)
+	return a:add(b,to,carry)
 end
 
 function lib.bnot(n,to)
@@ -190,10 +370,9 @@ function lib.bnot(n,to)
 	local mai = bwm[to.bitwidth].mai
 	local mama = bwm[to.bitwidth].mama
 	for i = 1, mai do
-		to[i] = bit.band(bit.bnot(n[i]),uimax)
+		to[i] = band(bnot(n[i]),uimax)
 	end
-	to[mai] = bit.band(to[mai], mama)
-	print(mama)
+	to[mai] = band(to[mai], mama)
 	return to
 end
 
@@ -221,12 +400,12 @@ function lib.lshift(n,s,to)
 	local mama = bwm[to.bitwidth].mama
 	local ish, shi = math.floor(s / uibiw), s % uibiw
 	for i = 1, mai do
-		to[i] = bit.bor(
-			bit.rshift(n[i-ish-1]or 0,uibiw-shi),
-			bit.band(shi~=0 and bit.lshift(n[i-ish]or 0,shi) or 0,uimax)
+		to[i] = bor(
+			rshift(n[i-ish-1]or 0,uibiw-shi),
+			band(shi~=0 and lshift(n[i-ish]or 0,shi) or 0,uimax)
 		)
 	end
-	to[mai] = bit.band(to[mai], mama)
+	to[mai] = band(to[mai], mama)
 	return to
 end
 
@@ -241,12 +420,12 @@ function lib.rshift(n,s,to)
 	local mama = bwm[to.bitwidth].mama
 	local ish, shi = math.floor(s / uibiw), s % uibiw
 	for i = 1, mai do
-		to[i] = bit.bor(
-			bit.rshift(n[i+ish]or uimax,shi),
-			bit.band(shi~=0 and bit.lshift(n[i+ish+1]or uimax,uibiw-shi) or 0,uimax)
+		to[i] = bor(
+			rshift(n[i+ish]or 0,shi),
+			band(shi~=0 and lshift(n[i+ish+1]or 0,uibiw-shi) or 0,uimax)
 		)
 	end
-	to[mai] = bit.band(to[mai], mama)
+	to[mai] = band(to[mai], mama)
 	return to
 end
 
@@ -260,15 +439,16 @@ function lib.arshift(n,s,to)
 	local mai = bwm[to.bitwidth].mai
 	local mama = bwm[to.bitwidth].mama
 	local ish, shi = math.floor(s / uibiw), s % uibiw
-	n[mai] = bit.bor(to[mai],bit.band(n:sign(),bit.bxor(mama, uimax)))
+	local sign = n:sign()
+	n[mai] = bor(n[mai],band(sign,bxor(mama, uimax)))
 	for i = 1, mai do
-		to[i] = bit.bor(
-			bit.rshift(n[i+ish]or uimax,shi),
-			bit.band(shi~=0 and bit.lshift(n[i+ish+1]or uimax,uibiw-shi) or 0,uimax)
+		to[i] = bor(
+			rshift(n[i+ish]or sign,shi),
+			band(shi~=0 and lshift(n[i+ish+1]or sign,uibiw-shi) or 0,uimax)
 		)
 	end
-	to[mai] = bit.band(to[mai], mama)
-	n[mai] = bit.band(n[mai], mama)
+	to[mai] = band(to[mai], mama)
+	n[mai] = band(n[mai], mama)
 	return to
 end
 
@@ -290,8 +470,8 @@ function lib.movsx(a,to)
 	end
 	local mai = bwm[a.bitwidth].mai
 	local mama = bwm[a.bitwidth].mama
-	to[mai] = bit.bxor(to[mai],bit.band(sign, bit.bnot(mama)))
-	to[tmai] = bit.band(to[tmai], tmama)
+	to[mai] = bxor(to[mai],band(sign, bnot(mama)))
+	to[tmai] = band(to[tmai], tmama)
 end
 
 function lib.binf(v)
@@ -299,7 +479,7 @@ function lib.binf(v)
 	for n=#v,1,-1 do
 		local ss = {}
 		for bi = uibiw-1,0,-1 do
-			ss[#ss+1] = bit.band(bit.rshift(v[n],bi),1)
+			ss[#ss+1] = band(rshift(v[n],bi),1)
 			if n==#v and bi > bwm[v.bitwidth].smsh then
 				ss[#ss] = ({[0]='.','!'})[ss[#ss]]
 			end
@@ -308,36 +488,5 @@ function lib.binf(v)
 	end
 	return table.concat(s,'')
 end
-
-local t={}
-t.a = lib.new(4,30)
-t.b = lib.new(-2,30)
-t.c = lib.new(8,30)
-local function pp()
-	print("{")
-	for k,v in pairs(t) do
-		print('',k.." = "..v:binf(),(unpack or table.unpack)(v))
-	end
-	print("}")
-end
-pp()
-print("sign",t.b:sign())
-print('-b -> b',t.b:negate(t.b))
-print("sign",t.b:sign())
-pp()
-print('a+b -> a',t.a:add(t.b,t.a))
-pp()
-print('a+c -> a',t.a:add(t.c,t.a))
-pp()
-t.c = lib.new(0,64)
-t.a:negate(t.a)
-print('-a movsx -> (64b)c',t.a:movsx(t.c))
-pp()
-print('a << 9 -> a')
-t.a:lshift(9,t.a)
-pp()
-print('a >> 10 -> a')
-t.a:arshift(10,t.a)
-pp()
 
 return lib
