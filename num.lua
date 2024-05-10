@@ -104,7 +104,11 @@ local function counted(f)
 	end
 end
 
+--[[
+local debugging = true
+--[=[]]
 local debugging = false
+--]=]
 local function debugged(n,f)
 	if not debugging then return f end
 	return function(...)
@@ -155,12 +159,12 @@ local bwm = setmetatable({},{__index = function(self,bitwidth)
 					olo = alo + blo + carry
 					olo, carry = ]]..split('olo')..[[ 
 					ohi = ahi + bhi + carry
-					blo, carry = ]]..split('blo')..[[ 
+					ohi, carry = ]]..split('ohi')..[[ 
 					to[]]..i..[[] = olo + lshift(ohi, ]]..hibiw..[[)
-				]]..(mama ~= uimax
-				and "carry = lshift(to["..mai.."],"..(smsh+1)..")"
-				or "")
-			end))..[[
+				]]
+			end))..(mama ~= uimax
+				and "carry = rshift(to["..mai.."],"..(smsh+1)..")\n"
+				or "")..[[
 			]]..fixmama()..[[
 		]]
 	end
@@ -256,8 +260,8 @@ local bwm = setmetatable({},{__index = function(self,bitwidth)
 			]]..tshift(function(i)
 				return [[
 					to[]]..i..[[] = bor(
-						rshift(n[]]..(i-1)..[[-ish]or 0,shi),
-						]]..fixui([[shi~=0 and lshift(n[]]..(i)..[[-ish]or 0,]]..uibiw..[[-shi)]])..[[ 
+						shi~=0 and rshift(n[]]..(i-1)..[[-ish]or 0,]]..uibiw..[[-shi) or 0,
+						]]..fixui([[lshift(n[]]..(i)..[[-ish]or 0,shi)]])..[[ 
 					)
 				]]
 			end)..[[ 
@@ -267,7 +271,7 @@ local bwm = setmetatable({},{__index = function(self,bitwidth)
 				return [[
 					to[]]..i..[[] = bor(
 						rshift(n[]]..i..[[+ish]or 0,shi),
-						]]..fixui([[shi~=0 and lshift(n[]]..(i+1)..[[+ish]or 0,]]..uibiw..[[-shi)]])..[[ 
+						]]..fixui([[shi~=0 and lshift(n[]]..(i+1)..[[+ish]or 0,]]..uibiw..[[-shi) or 0]])..[[ 
 					)
 				]]
 			end)..[[ 
@@ -277,7 +281,7 @@ local bwm = setmetatable({},{__index = function(self,bitwidth)
 				return [[
 					to[]]..i..[[] = bor(
 						rshift(n[]]..i..[[+ish]or sign,shi),
-						]]..fixui([[shi~=0 and lshift(n[]]..(i+1)..[[+ish]or sign,]]..uibiw..[[-shi)]])..[[ 
+						]]..fixui([[shi~=0 and lshift(n[]]..(i+1)..[[+ish]or sign,]]..uibiw..[[-shi) or 0]])..[[ 
 					)
 				]]
 			end,[[
@@ -298,6 +302,15 @@ function lib.new(n,bitwidth)
 	local obj = setmetatable({}, bwm[bitwidth].meta)
 	obj.bitwidth = bitwidth
 	return obj:from_lnum(n)
+end
+
+function lib.set_bitwidth(obj,bitwidth)
+	obj.bitwidth = bitwidth
+	setmetatable(obj,bwm[bitwidth].meta)
+	for n=1,bwm[bitwidth].mai do
+		obj[n] = obj[n] or 0
+	end
+	return obj
 end
 
 function lib.from_lnum(obj,n)
@@ -401,8 +414,8 @@ function lib.lshift(n,s,to)
 	local ish, shi = math.floor(s / uibiw), s % uibiw
 	for i = 1, mai do
 		to[i] = bor(
-			rshift(n[i-ish-1]or 0,uibiw-shi),
-			band(shi~=0 and lshift(n[i-ish]or 0,shi) or 0,uimax)
+			shi~=0 and rshift(n[i-ish-1]or 0,uibiw-shi) or 0,
+			band(lshift(n[i-ish]or 0,shi),uimax)
 		)
 	end
 	to[mai] = band(to[mai], mama)
@@ -455,9 +468,11 @@ end
 function lib.movzx(a,to)
 	to = to or lib.new(0, a.bitwidth)
 	local mai = bwm[to.bitwidth].mai
+	local mama = bwm[to.bitwidth].mama
 	for i = 1, mai do
 		to[i] = a[i] or 0
 	end
+	to[mai] = band(to[mai], mama)
 	return to
 end
 
