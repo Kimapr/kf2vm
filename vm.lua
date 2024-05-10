@@ -6,92 +6,45 @@ local mem = {}
 mem.__index = mem
 
 do
-	assert(num.BITWIDTH%8 == 0, "invalid platform bitwidth")
-	local words = math.floor(num.BITWIDTH / 8)
 	local bw = num.BITWIDTH
+	assert(bw%32 == 0 and bw>0, "invalid platform bitwidth")
+	local words = math.floor(bw / 8)
 	local tmp = num.new(0,bw)
 	local lns = #tmp
 
 	function mem.new(size)
 		local obj = setmetatable({}, mem)
 		size = math.ceil(size / words) * words
-		for n = 1,lns * (size / words) do
+		obj.digs = lns * (size/words)
+		for n = 1, obj.digs do
 			obj[n] = 0
 		end
 		return obj
 	end
 
-	local function tm(self,n)
-		local off = n*lns
-		for i=off+1,off+lns do
-			tmp[i-off] = self[i] or bit.bnot(0)
-		end
-		for i=off+lns+1,off+math.ceil(tmp.bitwidth / bw) do
-			tmp[i-off] = 0
-		end
-	end
-
-	local function tmw(self,n)
-		local off = n*lns
-		for i=off+1, off+lns do
-			self[i] = tmp[i-off]
-		end
-	end
-
 	function mem:read(at,to)
 		local bitwidth = to.bitwidth
 		to:bxor(to,to)
-		assert(to.bitwidth % 8 == 0, "not byte addressed")
 		local bytew = math.floor(bitwidth / 8)
-		local n1,n2 = math.floor(at/words),math.floor((at+bytew-1)/words)
-		tmp:set_bitwidth(math.max(bw,bitwidth))
-		tm(self,n1)
-		tmp:rshift(at%words*8,tmp)
+		local n1,n2 = math.floor(at/words)+1,math.floor((at+bytew-1)/words)+1
+		if n2 > n1 then return end
+		if n1 <= 0 or n1>self.digs then return end
+		tmp[1] = bit.rshift(self[n1], at%words*8)
 		tmp:movzx(to)
-		local off = bw - at%words*8
-		local ob
-		for n=n1+1,n2 do
-			ob = tmp.bitwidth
-			tmp:set_bitwidth(bitwidth)
-			tm(self,n)
-			tmp:lshift(off,tmp)
-			tmp:bor(to,to)
-			tmp:set_bitwidth(ob)
-			off=off+bw
-		end
 		return to
 	end
 
-	local tmpto = num.new(0,bw)
-	local tmpfr = num.new(0,bw)
-	local mask = num.new(0,bw)
-
 	function mem:write(at,to)
-		--[[
 		local bitwidth = to.bitwidth
-		assert(to.bitwidth % 8 == 0, "not byte addressed")
 		local bytew = math.floor(bitwidth / 8)
-		local n1,n2 = math.floor(at/words),math.floor((at+bytew-1)/words)
-		tmpto.bitwidth = math.max(bw,to.bitwidth)
-		tmp.bitwidth = bw
-		mask.bitwidth = tmpto.bitwidth
-		tmpfr.bitwidth = tmpto.bitwidth
-		to:movzx(tmpto)
-		tm(self,n1)
-		tmp:movzx(tmpfr)
-		tmpto:lshift(at%words*8)
-		mask:from_lnum(0):bnot(mask)
-		:rshift(math.max(0,mask.bitwidth-to.bitwidth),mask)
-		mask:lshift(at%words*8,mask):band(tmpto,tmpto)
-		mask:bnot(mask):band(tmpfr,tmpfr):bor(tmpto,tmpfr)
-		:movzx(tmp)
-		local off = bw - at%words*8
-		tmw(self,n1)
-		for n=n1+1,n2-1 do
-			
-		end
+		local n1,n2 = math.floor(at/words)+1,math.floor((at+bytew-1)/words)+1
+		if n2 > n1 then return end
+		if n1 <= 0 or n2>self.digs then return end
+		local sh = at%words*8
+		local mask = bit.lshift(bit.rshift(bit.bnot(0), bw-bitwidth),sh)
+		local val = bit.band(bit.lshift(to[1],sh),mask)
+		self[n1] = bit.bor(bit.band(self[n1],bit.bnot(mask)),val)
 		return to
-		--]] error("todo")
 	end
 
 end
@@ -99,25 +52,36 @@ end
 lib.__index = lib
 setmetatable(lib,lib)
 
-function lib.new(memsize)
+function lib.new(opts)
 	local obj = {}
-
+	obj.clockrate = opts.clockrate or 16384
 end
 
-local m = mem.new(1024*64)
+local m = mem.new(1024)
 
+--[[
 m[2] = 1 + 2*2^8 + 3*2^16 + 4*2^24 + 2^31
 math.randomseed(os.time())
 m[3] = math.random(0,2^31-1)
 for n=1,#m do
 	m[n] = num.bit.bor(m[n],m[n])
 end
+]]
+m:write(0,num.new(1+2+4+8+16+32+64+1024,32))
+m:write(2,num.new(65535,16))
+
+local function bbinf(m,bw)
+	if m then
+		return m:binf():reverse()
+	end
+	return num.new(0,bw):binf():reverse():gsub("[0-9]","_")
+end
 ---[[
 --m[2] = num.bit.bnot(0)
 
 for bw=8,num.BITWIDTH*4,8 do
 for n=-2,num.BITWIDTH*4/8-bw/8 do
-print((' '):rep((n+2)*8)..m:read(n,num.new(0,bw)):binf():reverse())
+print((' '):rep((n+2)*8)..bbinf(m:read(n,num.new(0,bw)),bw))
 end
 print('('..bw..'b) 0..'..(num.BITWIDTH*4/8-bw/8))
 end
@@ -130,7 +94,7 @@ local clocks={}
 local ii=0
 local ocl=os.clock()
 repeat
-	for u=0,4 do
+	for u=8,0,-1 do
 		local ocl = os.clock()
 		for n=1,steps do
 			m:read(u,reg)
@@ -138,9 +102,9 @@ repeat
 		clocks[u] = (clocks[u] or 0) + (os.clock()-ocl)
 	end
 	ii=ii+1
-until os.clock()-ocl > 5
+until os.clock()-ocl > 2
 for u=0,#clocks do
-	print("*(long long*)"..u,(steps*ii)/(clocks[u])/(1000000) .. " MIPS")
+	print("*(long long*)"..u,(steps*ii)/(clocks[u])/(1000000) .. " MIPS: "..bbinf(m:read(u,reg),reg.bitwidth))
 end
 
 return lib
