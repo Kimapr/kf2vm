@@ -14,7 +14,10 @@ function profiler_stop()
 end
 outfile = io.open("profile","w")
 profiler_start(1,outfile)
-dofile("bench.lua")
+local arg = (...) or "bench.lua"
+print(xpcall(function()
+dofile(arg)
+end,debug.traceback))
 profiler_stop()
 outfile:close()
 os.execute("flamegraph.pl profile > gr.svg")

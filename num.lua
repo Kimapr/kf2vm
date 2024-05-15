@@ -240,19 +240,18 @@ local bwm = setmetatable({},{__index = function(self,bitwidth)
 			]]..add()..[[ 
 			return to
 		end
-		meta.sub = function(a, b, to, carry)
+		meta.sub = function(a, b, to)
 			to = to or lib.new(0, ]]..bitwidth..[[)
 			]]..fixsize('a','b','to')..[[ 
 			do
 				local a,b,to = b,one,subn
 				]]..bnot()..[[ 
 				a = to
-				local carry = 0
-				]]..add()..[[ 
 			end
 			b = subn
+			local carry = 1
 			]]..add()..[[ 
-			return to, carry
+			return to
 		end
 		local shtmp = lib.new(0, ]]..bitwidth..[[)
 		local floor = math.floor
