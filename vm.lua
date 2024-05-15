@@ -1,7 +1,6 @@
 --[[
 8-bit instruction
 we are little endian
-all bit patterns below are little endian
 
 stack BASED
 	stack element is 4 bytes
@@ -11,80 +10,7 @@ stack BASED
 3 register
 	ip, sp, bp
 	ip points to instruction
-	sp, bp usable as stack
-
-push = decrement ptr by elemsize, write elem
-pop = read elem, increment ptr by elemsize
-stack operand = pop to read, push to write
-
-two operand specifier 4bit (OPTWO)
-	a:
-		reg ip
-		reg sp
-		reg bp
-		stack sp
-		stack bp
-	b:
-		1byte immediate
-		stack sp
-		stack bp
-	if a is stack, b is the same stack.
-	bitpatterns:
-		i = 0
-		for a=... do
-		for b=... do
-			op2specs[(a,b)] = i
-			i=i+1
-		end end
-		-- note: 1111 is UNUSED
-
-one operand specifier|stack, 1bit (OPONE, stack)
-	a:
-		0 - stack sp
-		1 - stack bp
-
-Instructions
-
-NOP: 00000000
-	does absolutely fucking nothing
-
-two operand instructions:
-	(OPCODE:4bit OPTWO:4bit)
-	ADD(1000): a = a+b
-	SUB(0100): a = a-b
-	SHL(1100): a = a<<b
-	SHR(0010): a = a>>b
-	SHAR(1010): a = a>>b fill with sign
-	AND(0110): a = a&b
-	OR(1110): a = a|b
-	XOR(0001): a = a~b
-
-one operand instructions:
-	(OPCODE:7bit OPONE:1bit)
-	BNOT(1001000): a = ~a
-	NEG(0101000): a = -a
-
-multiop stackonly instructions:
-	stack sp
-	MUL(1001100 signed:1bit):
-		pop two elems
-		extend (sign if signed, zero if not) elems double size
-		mul elems push res (double elem)
-	DIV(0101100 signed:1bit):
-		pop double elem (dividend)
-		pop elem (divisor)
-		Divide. push res (elem)
-
-memory instructions:
-	LOAD(11011 register:2bit stack:1bit)
-		register:
-			00 - no register (absolute address)
-			10 - ip
-			01 - sp
-			11 - bp
-
-
-
+	sp, bp usable as stack (grows downwards)
 --]]
 
 
@@ -365,6 +291,15 @@ for _,b in ipairs {
 		})[b[1]]
 	)
 end)() end end
+insins("dup stack sp",
+	function(self)
+		return self:pop(self.sp,self.tmp1)
+	end,
+	function(self)
+		self.sp:add(sp_n,self.sp)
+		return self:push(self.sp,self.tmp1)
+	end
+)
 for opk,op in ipairs {"add","sub","band","bor","bxor","lshift","rshift","arshift"} do
 for _,a in ipairs {
 	{"reg","ip"},
@@ -416,6 +351,21 @@ for _,b in ipairs {
 		})[a[1]]
 	)
 end)() end end end
+for _,op in ipairs {"bnot","neg"} do
+(function()
+	insins(op.." stack sp"
+		function(self)
+			return self:pop(self.sp,self.tmp1)
+		end,
+		function(self)
+			self.tmp1[op](self.tmp1,self.tmp1)
+			return true
+		end,
+		function(self)
+			return self:push(self.sp,self.tmp1)
+		end
+	)
+end)() end
 
 function lib:push(stack,val)
 	assert(val.bitwidth == vmbw,"bad stack value")
