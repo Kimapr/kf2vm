@@ -251,7 +251,7 @@ local bwm = setmetatable({},{__index = function(self,bitwidth)
 			b = subn
 			local carry = 1
 			]]..add()..[[ 
-			return to
+			return to, carry
 		end
 		local shtmp = lib.new(0, ]]..bitwidth..[[)
 		local floor = math.floor
@@ -399,6 +399,35 @@ for _,name in pairs{"band","bor","bxor"} do
 		end
 		return to
 	end
+end
+
+function lib.mul(a,b,to)
+	to = to or lib.new(0, a.bitwidth)
+	if a == to then
+		a = a or a:movzx(temps[a.bitwidth].mula)
+	end
+	if b == to then
+		b = b or b:movzx(temps[b.bitwidth].mulb)
+	end
+	n:assure_eqbits(b,to)
+	local stmp = temps[hibiw].smul
+	local tmp = temps[a.bitwidth].mul
+	local mai = bwm[a.bitwidth].mai
+	local mama = bwm[a.bitwidth].mama
+	local ima = math.ceil(a.bitwidth/uibiw)*uibiw-hibiw
+	to:xor(to,to)
+	for i=0,ima,hibiw do
+		for j=0,ima-i,hibiw do
+			a:rshift(i,tmp)
+			local aa = band(tmp[1],himlo)
+			b:rshift(j,tmp)
+			local bb = band(tmp[1],himlo)
+			tmp[1] = bor(aa * bb,0)
+			tmp:lshift(i+j,tmp)
+			to:add(tmp,to)
+		end
+	end
+	return to
 end
 
 function lib.lshift(n,s,to)

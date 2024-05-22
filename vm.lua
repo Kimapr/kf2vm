@@ -13,10 +13,14 @@ stack BASED
 	sp, bp usable as stack (grows downwards)
 --]]
 
-
 local lib = {}
-local base = (... or "vm"):match("(.-)[^%.]+$")
-local num = require(base .. "num")
+local num
+if minetest then
+	num = dofile(minetest.get_modpath(minetest.get_current_modname()).."/num.lua")
+else
+	local base = (... or "vm"):match("(.-)[^%.]+$")
+	num = require(base .. "num")
+end
 local bit = num.bit
 
 local mem = {}
@@ -35,7 +39,7 @@ do
 
 	function mem.new(size)
 		local obj = setmetatable({}, mem)
-		size = math.ceil(size / words) * words
+		obj.size = math.ceil(size / words) * words
 		obj.digs = lns * (size/words)
 		for n = 1, obj.digs do
 			obj[n] = 0
@@ -75,7 +79,6 @@ local function rbn(s)
 end
 
 lib.__index = lib
-setmetatable(lib,lib)
 local zero = num.new(0,vmbw)
 local one = num.new(1,vmbw)
 local es_p = num.new(vmbw/8,vmbw)
@@ -88,6 +91,8 @@ assert(vmbw == 32, "HOLY NUMBER CHANGED")
 local mrword  = num.new(0,32)
 local mrhword = num.new(0,16)
 local mrbyte  = num.new(0,8)
+      -- say my name
+      -- - mr byte
 
 local function norptr(ptr)
 	return ptr[1]%nmax
@@ -108,19 +113,14 @@ function lib.new(opts)
 	obj.memsize   = math.ceil((opts.memsize  or 640*1024)/obj.pagesize)
 	                -- 640K ought to be enough for anybody
 	                --  - bill gae
-	obj.reserved  = math.ceil((opts.reserved or 8)/obj.pagesize)
 	obj.memsizeb  = obj.memsize * obj.pagesize
-	obj.reservedb = obj.reserved * obj.pagesize
-	obj.totalmemb = obj.memsizeb + obj.reservedb
 
 	obj.mem  = mem.new(obj.memsize * obj.pagesize)
-	obj.resmap = {[0]={
-		lib.nullrm
-	}}
+	obj.resmap = {}
 	obj.cycles = 0
 
-	obj.ip     = num.new(obj.reservedb,vmbw)
-	obj.sp     = num.new(obj.totalmemb,vmbw)
+	obj.ip     = num.new(0,vmbw)
+	obj.sp     = num.new(obj.memsizeb,vmbw)
 	obj.bp     = num.new(0,vmbw)
 	obj.tmp1   = num.new(0,vmbw)
 	obj.tmp2   = num.new(0,vmbw)
@@ -130,52 +130,50 @@ function lib.new(opts)
 
 	setmetatable(obj,lib)
 	if opts.code then
-		obj:load(obj.reservedb,opts.code)
+		obj:load(0,opts.code)
 	end
 	return obj
+end
+
+function lib:palloc(at)
+	self:pfree(at)
+	local p = math.floor(at/self.pagesize)
+	self.resmap[p] = self.resmap[p] or {}
+	local m = mem.new(self.pagesize)
+	m.pos = at
+	m.len = self.pagesize
+	m.rtype = "mem"
+	table.insert(self.resmap[p],1,m)
+end
+
+function lib:pfree(at)
+	local p = math.floor(at/self.pagesize)
+	local pma = self.resmap[p]
+	if not pma then return end
+	local good
+	repeat
+		good = true
+		for k,v in pairs(pma) do
+			if v.rtype == "mem" then
+				table.remove(pma,k)
+				good = false
+				break
+			end
+		end
+	until good
 end
 
 function lib:teat(n)
 	self.cycles = self.cycles - n
 end
 
-lib.nullrm = {
-	pos=0, len=12,
-	read = function(o,self,at,to)
-		if w ~= vmbb then return end
-		if at==vmbb then
-			to[1] = self.reservedb
-		elseif at==vmbb*2 then
-			to[1] = self.reservedb + self.memsizeb
-		elseif at==0 then
-			to[1] = 1
-		else
-			return
-		end
-		to:bor(to,to)
-		return to
-	end,
-	write = function() end
-}
-
-lib.isa = {
-	[0] = function(self)
-		return true
-	end,
-	function() return false, "halt" end,
-	function(self)
-		self.ip[1] = self.reservedb
-		self.ip:bor(self.ip,self.ip)
-		self.opcode:bxor(self.opcode,self.opcode)
-		return true
-	end
-}
-lib.isadoc = {[0]="nop"}
-local lasti, lastni = 0,0
+lib.isa = {}
+lib.isadoc = {}
+local lasti, lastni = -1,0
 
 local function s_imm(reg)
 	return function(self)
-		local ok,err = self:read(norptr(self.ip),mrbyte)
+		local ok,err = self:readx(norptr(self.ip),mrbyte)
 		if not ok then
 			return ok,err
 		end
@@ -186,6 +184,7 @@ local function s_imm(reg)
 end
 
 lib.asms = {}
+lib.insw = {}
 
 local function isadoc(i,doc)
 	lib.isadoc[i] = doc
@@ -193,7 +192,7 @@ local function isadoc(i,doc)
 	lib.asms[doc] = string.char(i)
 end
 
-local function insins(doc,f,...)
+local function insins_(doc,i,f,...)
 	lasti=lasti+1
 	local fl={...}
 	if #fl>0 then
@@ -217,6 +216,7 @@ local function insins(doc,f,...)
 	end
 	isadoc(lasti,doc)
 	lib.isa[lasti%nmax] = f
+	lib.insw[lasti%nmax] = i
 	for k,f in ipairs(fl) do
 		lastni = lastni - 1
 		if k<#fl then
@@ -242,9 +242,15 @@ local function insins(doc,f,...)
 		isadoc(lastni%nmax,doc.." cont#"..k)
 	end
 end
+local function insins(doc,i,f,...)
+	if type(i)=="function" then
+		return insins_(doc,0,i,f,...)
+	end
+	return insins_(doc,i,f,...)
+end
 
-insins("halt",function()
-	return false, "halt"
+insins("nop",function(self)
+	return true
 end)
 
 for _,a in ipairs {
@@ -253,7 +259,7 @@ for _,a in ipairs {
 	{"reg","bp"},
 	{"stack","sp"},
 	{"stack","bp"},
-	{"imm",1}
+	{"imm",1},
 } do
 for _,b in ipairs {
 	{"reg","ip"},
@@ -266,6 +272,7 @@ for _,b in ipairs {
 	if (a[1] == b[1]) and (a[2] == b[2]) then return end
 	local rega,regb = a[2],b[2]
 	insins(("mov %s to %s"):format(table.concat(a," "),table.concat(b," ")),
+		a[1]=="imm" and 1 or 0,
 		({
 			reg = function(self)
 				self[rega]:movzx(self.tmp1)
@@ -291,16 +298,82 @@ for _,b in ipairs {
 		})[b[1]]
 	)
 end)() end end
-insins("dup stack sp",
-	function(self)
-		return self:pop(self.sp,self.tmp1)
-	end,
-	function(self)
-		self.sp:add(sp_n,self.sp)
-		return self:push(self.sp,self.tmp1)
+for _,ty in ipairs {
+	"fetch","store"
+} do
+for _,bus in ipairs {
+	{"word",mrword},
+	{"hword",mrhword},
+	{"byte",mrbyte},
+} do
+for _,addr in ipairs {
+	{"stack","sp"},
+	{"imm",1},
+} do
+for _,rel in ipairs {
+	0,
+	"ip",
+	"sp",
+	"bp",
+} do
+for _,ex in ipairs {
+	{"zx","movzx"},
+	{"sx","movsx"},
+} do (function()
+	if rel==0 and addr[1] == "imm" then return end
+	if rel~=0 and addr[1] == "stack" then return end
+	local to = bus[2]
+	local exf = ex[2]
+	if ty == "fetch" and ((bus[2].bitwidth < vmbw) or (ex[1] == "zx")) then
+		insins(("fetch%s %s %s %s-rel to stack sp")
+			:format((bus[2].bitwidth < vmbw) and ex[1] or "",bus[1],table.concat(addr," "),rel),
+			addr[1] == "imm" and 1 or 0,
+			({
+				stack = function(self)
+					return self:pop(self.sp,self.tmp1)
+				end,
+				imm = s_imm("tmp1")
+			})[addr[1]],
+			function(self)
+				self.tmp1:add(rel==0 and zero or self[rel],self.tmp1)
+			end,
+			function(self)
+				local ok, err = self:read(norptr(self.tmp1),to)
+				if not ok then return ok,err end
+				to[exf](to,self.tmp1)
+				return self:push(self.sp,self.tmp1)
+			end
+		)
 	end
-)
-for opk,op in ipairs {"add","sub","band","bor","bxor","lshift","rshift","arshift"} do
+	if ty == "store" and ex[1] == "zx" then
+		insins(("store %s stack sp to %s %s-rel")
+			:format(bus[1],table.concat(addr," "),rel),
+			addr[1]=="imm" and 1 or 0,
+			({
+				stack = function(self)
+					return self:pop(self.sp,self.tmp1)
+				end,
+				imm = s_imm("tmp1")
+			})[addr[1]],
+			function(self)
+				self.tmp1:add(rel==0 and zero or self[rel], self.tmp1)
+			end,
+			function(self)
+				return self:pop(self.sp,self.tmp2)
+			end,
+			function(self)
+				local ok,err = self:write(norptr(self.tmp1),self.tmp2)
+				if not ok then return ok,err end
+				return true
+			end
+		)
+	end
+end)() end end end end end
+for opk,op in ipairs {
+	"add","sub",
+	"band","bor","bxor",
+	"lshift","rshift","arshift"
+} do
 for _,a in ipairs {
 	{"reg","ip"},
 	{"reg","sp"},
@@ -321,6 +394,7 @@ for _,b in ipairs {
 	end end
 	local rega,regb = a[2],b[2]
 	insins(("%s %s to %s"):format(op,table.concat(b," "),table.concat(a," ")),
+		b[1]=="imm" and 1 or 0,
 		({
 			stack = function(self)
 				return self:pop(self[regb],self.tmp2)
@@ -351,9 +425,31 @@ for _,b in ipairs {
 		})[a[1]]
 	)
 end)() end end end
+insins("add out carry stack sp",
+	function(self)
+		return self:pop(self.sp,self.tmp3)
+	end,
+	function(self)
+		return self:pop(self.sp,self.tmp2)
+	end,
+	function(self)
+		return self:pop(self.sp,self.tmp1)
+	end,
+	function(self)
+		local _,carry = self.tmp1:add(self.tmp2,self.tmp1,bit.band(self.tmp3[1],1))
+		self.tmp2[1] = carry
+		return true
+	end,
+	function(self)
+		return self:push(self.sp,self.tmp1)
+	end,
+	function(self)
+		return self:push(self.sp,self.tmp2)
+	end
+)
 for _,op in ipairs {"bnot","neg"} do
 (function()
-	insins(op.." stack sp"
+	insins(op.." stack sp",
 		function(self)
 			return self:pop(self.sp,self.tmp1)
 		end,
@@ -366,7 +462,93 @@ for _,op in ipairs {"bnot","neg"} do
 		end
 	)
 end)() end
-
+insins("mul stack sp",
+	function(self)
+		return self:pop(self.sp,self.tmp1)
+	end,
+	function(self)
+		return self:pop(self.sp,self.tmp2)
+	end,
+	function(self)
+		self.tmp1:mul(self.tmp2,self.tmp1)
+		self:teat(3)
+		return true
+	end,
+	function(self)
+		return self:push(self.sp,self.tmp1)
+	end
+)
+insins("div/mod stack sp",
+	function(self)
+		return self:pop(self.sp,self.tmp1)
+	end,
+	function(self)
+		return self:pop(self.sp,self.tmp2)
+	end,
+	function(self)
+		self.tmp1[1],self.tmp2[1]
+		= norptr(self.tmp1),norptr(self.tmp2)
+		self.tmp1[1],self.tmp2[1]
+		= math.floor(self.tmp1[1]/self.tmp2[1]),
+		  self.tmp1[1] % self.tmp2[1]
+		self.tmp1:bor(self.tmp1,self.tmp1)
+		self.tmp2:bor(self.tmp2,self.tmp2)
+		self:teat(7)
+		return true
+	end,
+	function(self)
+		return self:push(self.sp,self.tmp1)
+	end,
+	function(self)
+		return self:push(self.sp,self.tmp2)
+	end
+)
+for _,op in ipairs {
+	{"if==",function(sf,cf,of,zf) return zf end},
+	{"if!=",function(sf,cf,of,zf) return not zf end},
+	{"if<u",function(sf,cf,of,zf) return cf end},
+	{"if>=u",function(sf,cf,of,zf) return not cf end},
+	{"if<=u",function(sf,cf,of,zf) return cf and zf end},
+	{"if>u",function(sf,cf,of,zf) return (not cf) and (not zf) end},
+	{"if<s",function(sf,cf,of,zf) return sf ~= of end},
+	{"if>=s",function(sf,cf,of,zf) return sf == of end},
+	{"if<=s",function(sf,cf,of,zf) return zf or (sf ~= of) end},
+	{"if>s",function(sf,cf,of,zf) return (not zf) and (sf == of) end},
+} do (function()
+	insins(op[1],
+		function(self)
+			return self:pop(self.sp,self.tmp1)
+		end,
+		function(self)
+			return self:pop(self.sp,self.tmp2)
+		end,
+		function(self)
+			local _,car = self.tmp1:sub(self.tmp2,self.tmp3)
+			local as,bs,os = self.tmp1:sign(),self.tmp2:sign(),self.tmp3:sign()
+			as,bs,os = as~=0, bs==0, bs~=0
+			local over = as==bs and as~=os
+			local zero = self.tmp3[1] == 0
+			if not op[2](os,car,over,zero) then
+				self.tmp1[1] = 1
+				return true
+			end
+			self.tmp1[1] = 0
+			return true
+		end,
+		function(self)
+			if self.tmp1[1] == 1 then return true end
+			local ok,err = self:readx(norptr(self.ip),mrbyte)
+			if not ok then return ok,err end
+			mrbyte:movzx(self.opcode)
+			self:teat(1)
+			self.ip:add(one,self.ip)
+			local w = self.insw[norptr(self.opcode)] or 0
+			mrword[1] = w
+			self.ip:add(mrword,self.ip)
+			return true
+		end
+	)
+end)() end
 function lib:push(stack,val)
 	assert(val.bitwidth == vmbw,"bad stack value")
 	stack:add(es_n,stack)
@@ -390,7 +572,8 @@ function lib:findres(at)
 	local res = self.resmap[math.floor(at/self.pagesize)]
 	if res then
 		local data
-		for k,v in ipairs(res) do
+		for k=#res,1,-1 do
+			local v = res[k]
 			if at>=v.pos and at<(v.pos+v.len) then
 				return v
 			end
@@ -405,6 +588,12 @@ function lib:load(at,str)
 		at=at+1
 	end)
 end
+mem.load = lib.load
+
+function lib:readx(at,to)
+	-- todo: no-execute mmu bit
+	return self:read(at,to)
+end
 
 function lib:read(at,to)
 	local bs = math.floor(to.bitwidth/8)
@@ -413,14 +602,12 @@ function lib:read(at,to)
 	end
 	local res = self:findres(at)
 	if res then
-		if not res:read(self,at-res.pos,to) then
+		if not res:read(at-res.pos,to,self) then
 			return false, "memfail"
 		end
 		return true
 	end
-	if not self.mem:read(at-self.reservedb,to) then
-		return false, "memfail"
-	end
+	to[1] = 0
 	return true
 end
 
@@ -431,15 +618,16 @@ function lib:write(at,to)
 	end
 	local res = self:findres(at)
 	if res then
-		if not res:write(self,at-res.pos,to) then
+		if not res:write(at-res.pos,to,self) then
 			return false, "memfail"
 		end
 		return true
 	end
-	if not self.mem:write(at-self.reservedb,to) then
-		return false, "memfail"
+	if at<self.memsizeb then
+		self:palloc(at)
+		return self:write(at,to)
 	end
-	return true
+	return false, "memfail"
 end
 
 local function gdoc(opcode)
@@ -456,14 +644,18 @@ end
 lib.step = trapped (-- in my basement )
 (function() local function step(self)
 	if self.opcode[1] == 0 then
-		local ok,err = self:read(norptr(self.ip),mrbyte)
+		local ok,err = self:readx(norptr(self.ip),mrbyte)
 		self:teat(1)
 		if not ok then return ok, err end
 		mrbyte:movzx(self.opcode)
 		self.ip:add(one,self.ip)
 	end
 	local fn = self.isa[norptr(self.opcode)]
-	--print(self.cycles.." executing " .. norptr(self.opcode) .. " " .. gdoc(self.opcode) .. " at "..norptr(self.ip))
+	--[[
+	print(self.cycles.." executing "
+	.. norptr(self.opcode) .. " " .. gdoc(self.opcode)
+	.. " at "..norptr(self.ip))
+	--]]
 	if not fn then
 		return false, "badcode"
 	end
@@ -477,12 +669,13 @@ end return step end)())
 
 function lib:update(dt)
 	self.cycles = self.cycles + self.clockrate * dt
+	local cycbeg = self.cycles
 	local cyc = 0
 	while self.cycles > 0 do
 		self:step()
 		cyc = cyc + 1
 	end
-	return cyc
+	return cyc, self.cycles - cycbeg
 end
 
 return lib

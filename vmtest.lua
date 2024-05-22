@@ -11,8 +11,9 @@ local obj = vm.new({
 	}
 })
 
-for k,v in ipairs(vm.isadoc) do
-	if k <256 then
+for k=0,255 do
+	local v = vm.isadoc[k]
+	if v then
 		print(k,v)
 	end
 end
