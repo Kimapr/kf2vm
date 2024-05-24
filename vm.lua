@@ -103,11 +103,17 @@ if num.new(-1,vmbw)[1] > 0 then
 	end
 end
 
+lib.isa = {}
+lib.isadoc = {}
+local lasti, lastni = -1,0
+lib.asms = {}
+lib.insw = {}
+
 function lib.new(opts)
 	local obj = {}
 	opts = opts or {}
 
-	obj.clockrate = opts.clockrate or 16*1024
+	obj.clockrate = opts.clockrate or 64*1024
 	obj.pagesize  = opts.pagesize  or 1024
 	obj.mmusize   = opts.mmusize   or 128
 	obj.memsize   = math.ceil((opts.memsize  or 640*1024)/obj.pagesize)
@@ -115,8 +121,10 @@ function lib.new(opts)
 	                --  - bill gae
 	obj.memsizeb  = obj.memsize * obj.pagesize
 
-	obj.mem  = mem.new(obj.memsize * obj.pagesize)
 	obj.resmap = {}
+	obj.memps = {}
+	obj.isa = setmetatable({},{__index = lib.isa})
+	obj.lastni = lastni
 	obj.cycles = 0
 
 	obj.ip     = num.new(0,vmbw)
@@ -135,41 +143,54 @@ function lib.new(opts)
 	return obj
 end
 
+function lib:add_memio(obj)
+	for p=math.floor(obj.pos/self.pagesize),
+	      math.floor((obj.pos-1+obj.len)/self.pagesize) do
+		self.resmap[p] = self.resmap[p] or {}
+		table.insert(self.resmap[p],1,obj)
+	end
+end
+
+function lib:del_memio(obj)
+	for p=math.floor(obj.pos/self.pagesize),
+	      math.floor((obj.pos-1+obj.len)/self.pagesize) do
+		local pma = self.resmap[p]
+		local good
+		repeat
+			good=true
+			for k,v in pairs(pma) do
+				if v==obj then
+					table.remove(pma,k)
+					good = false
+					break
+				end
+			end
+		until good
+	end
+end
+
 function lib:palloc(at)
 	self:pfree(at)
 	local p = math.floor(at/self.pagesize)
-	self.resmap[p] = self.resmap[p] or {}
 	local m = mem.new(self.pagesize)
-	m.pos = at
+	self.memps[p] = m
+	m.pos = p*self.pagesize
 	m.len = self.pagesize
 	m.rtype = "mem"
-	table.insert(self.resmap[p],1,m)
+	self:add_memio(m)
 end
 
 function lib:pfree(at)
 	local p = math.floor(at/self.pagesize)
-	local pma = self.resmap[p]
-	if not pma then return end
-	local good
-	repeat
-		good = true
-		for k,v in pairs(pma) do
-			if v.rtype == "mem" then
-				table.remove(pma,k)
-				good = false
-				break
-			end
-		end
-	until good
+	local m = self.memps[p]
+	if not m then return end
+	self:del_memio(m)
+	self.memps[p] = nil
 end
 
 function lib:teat(n)
 	self.cycles = self.cycles - n
 end
-
-lib.isa = {}
-lib.isadoc = {}
-local lasti, lastni = -1,0
 
 local function s_imm(reg)
 	return function(self)
@@ -182,9 +203,6 @@ local function s_imm(reg)
 		return true
 	end
 end
-
-lib.asms = {}
-lib.insw = {}
 
 local function isadoc(i,doc)
 	lib.isadoc[i] = doc
@@ -551,6 +569,7 @@ for _,op in ipairs {
 end)() end
 function lib:push(stack,val)
 	assert(val.bitwidth == vmbw,"bad stack value")
+	local a = stack[1]
 	stack:add(es_n,stack)
 	local ok,err = self:write(norptr(stack),val)
 	if not ok then
@@ -607,6 +626,9 @@ function lib:read(at,to)
 		end
 		return true
 	end
+	if at>=self.memsizeb then
+		return false, "memfail"
+	end
 	to[1] = 0
 	return true
 end
@@ -648,14 +670,29 @@ lib.step = trapped (-- in my basement )
 		self:teat(1)
 		if not ok then return ok, err end
 		mrbyte:movzx(self.opcode)
+		---[[
+		if self.debugging and norptr(self.opcode)<=255 and self.cycles<1 then
+			local dstr = {self.cycles.." executing "
+			.. norptr(self.opcode) .. " " .. gdoc(self.opcode)
+			.. " at "..norptr(self.ip)}
+			do
+				for k,v in ipairs{"ip","sp","bp"} do
+					local ip = norptr(self[v])
+					local str = {v..": "..("%.8x"):format(ip).."\t"}
+					for x=ip-16,ip+16 do
+						local n = x%nmax
+						local suc = self:read(n,mrbyte)
+						str[#str+1] = (n==ip and ">" or " ") .. (suc and ("%.2x"):format(mrbyte[1]) or "..")
+					end
+					dstr[#dstr+1]=table.concat(str)
+				end
+			end
+			self.debug_str = table.concat(dstr,"\n")
+		end
+		--]]
 		self.ip:add(one,self.ip)
 	end
 	local fn = self.isa[norptr(self.opcode)]
-	--[[
-	print(self.cycles.." executing "
-	.. norptr(self.opcode) .. " " .. gdoc(self.opcode)
-	.. " at "..norptr(self.ip))
-	--]]
 	if not fn then
 		return false, "badcode"
 	end
@@ -671,7 +708,7 @@ function lib:update(dt)
 	self.cycles = self.cycles + self.clockrate * dt
 	local cycbeg = self.cycles
 	local cyc = 0
-	while self.cycles > 0 do
+	while self.cycles >= 1 do
 		self:step()
 		cyc = cyc + 1
 	end
