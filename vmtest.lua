@@ -26,7 +26,9 @@ local code = table.concat {
 	asms["add imm 2 to reg bp"],"\0","\192",
 	asms["mov imm 1 to stack sp"],"\12",
 	"\0",
-	call(2),
+	call(6),
+	asms["add imm 1 to reg sp"],"\4",
+	asms["add imm 1 to reg ip"],string.char((-2-2-#call(0)-1-2)%256),
 	"\0","\255", -- invalid instruction
 
 	-- fact
@@ -46,12 +48,14 @@ local code = table.concat {
 
 print((code:gsub('.',function(c)return ("%.2x"):format(string.byte(c))end)))
 
+local fast = os.getenv("FAST")
+
 local obj = vm.new({
 	code = code,
-	clockrate=20--64*1024
+	clockrate=fast and 64*1024 or 20
 })
 
-obj.debugging = true
+obj.debugging = not fast
 
 for k=0,255 do
 	local v = vm.isadoc[k]
@@ -63,17 +67,22 @@ end
 local socket = require "socket"
 
 local i=0
-local cl=socket.gettime()
 local pip=obj.ip[1]
 local pi=0
 local dt=0
 
-local ptime = socket.gettime()
 socket.sleep(0.5)
+local cl=socket.gettime()
+local ptime = socket.gettime()
+local ir,tr=0,0
 while true do
-	dt = math.min(1/10,dt)
 	local ok,err=xpcall(function()
-	i=i+obj:update(dt)
+	local btr = socket.gettime()
+	local _,iir=obj:update(dt)
+	iir=-iir
+	i=i+iir
+	ir=ir+iir
+	tr = tr + (socket.gettime()-btr)
 	end,debug.traceback)
 	if not ok then
 		err = err.."\n"..(obj.debug_str or "?").."\n"
@@ -83,14 +92,17 @@ while true do
 	local clc=socket.gettime()
 	dt = clc - ptime
 	ptime = clc
-	--if clc-cl > 1/5 then
-		local clc=socket.gettime()
+	if not fast or (clc-cl > 1) then
 		local pipc = obj.ip[1]
-		assert(({[0]=1,[true]=1})[os.execute("clear")])
-		print("FPS ".. 1/dt)
-		print("ip="..pipc,(i)/(clc-cl) .. " IPS\t(" .. (math.floor((i/(clc-cl)/obj.clockrate*100))/1) .. "%)")
-		print(obj.debug_str)
+		if not fast then
+			assert(({[0]=1,[true]=1})[os.execute("clear")])
+			print("FPS ".. 1/dt)
+		end
+		print("ip="..pipc,(i)/(clc-cl) .. " Hz (" .. (math.floor((i/(clc-cl)/obj.clockrate*100))/1) .. "%),\t"..(ir/tr).." Hz real")
+		if not fast then
+			print(obj.debug_str)
+		end
 		cl=clc pip=pipc
 		i=0
---	end
+	end
 end
