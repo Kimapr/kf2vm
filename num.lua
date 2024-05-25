@@ -404,18 +404,17 @@ end
 function lib.mul(a,b,to)
 	to = to or lib.new(0, a.bitwidth)
 	if a == to then
-		a = a or a:movzx(temps[a.bitwidth].mula)
+		a = a:movzx(temps[a.bitwidth].mula)
 	end
 	if b == to then
-		b = b or b:movzx(temps[b.bitwidth].mulb)
+		b = b:movzx(temps[b.bitwidth].mulb)
 	end
-	n:assure_eqbits(b,to)
-	local stmp = temps[hibiw].smul
+	a:assure_eqbits(b,to)
 	local tmp = temps[a.bitwidth].mul
 	local mai = bwm[a.bitwidth].mai
 	local mama = bwm[a.bitwidth].mama
 	local ima = math.ceil(a.bitwidth/uibiw)*uibiw-hibiw
-	to:xor(to,to)
+	to:bxor(to,to)
 	for i=0,ima,hibiw do
 		for j=0,ima-i,hibiw do
 			a:rshift(i,tmp)

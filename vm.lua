@@ -192,14 +192,22 @@ function lib:teat(n)
 	self.cycles = self.cycles - n
 end
 
-local function s_imm(reg)
+local simmcs = {}
+local sones = {}
+for n=1,vmbb do
+	simmcs[n] = num.new(0,n*8)
+	sones[n] = num.new(n,vmbw)
+end
+local function s_imm(reg,width)
+	width = width or 1
+	local mr,i = simmcs[width],sones[width]
 	return function(self)
-		local ok,err = self:readx(norptr(self.ip),mrbyte)
+		local ok,err = self:readx(norptr(self.ip),mr)
 		if not ok then
 			return ok,err
 		end
-		self.ip:add(one,self.ip)
-		mrbyte:movsx(self[reg])
+		self.ip:add(i,self.ip)
+		mr:movsx(self[reg])
 		return true
 	end
 end
@@ -278,6 +286,8 @@ for _,a in ipairs {
 	{"stack","sp"},
 	{"stack","bp"},
 	{"imm",1},
+	{"imm",2},
+	{"imm",3},
 } do
 for _,b in ipairs {
 	{"reg","ip"},
@@ -290,7 +300,7 @@ for _,b in ipairs {
 	if (a[1] == b[1]) and (a[2] == b[2]) then return end
 	local rega,regb = a[2],b[2]
 	insins(("mov %s to %s"):format(table.concat(a," "),table.concat(b," ")),
-		a[1]=="imm" and 1 or 0,
+		a[1]=="imm" and a[2] or 0,
 		({
 			reg = function(self)
 				self[rega]:movzx(self.tmp1)
@@ -299,7 +309,7 @@ for _,b in ipairs {
 			stack = function(self)
 				return self:pop(self[rega],self.tmp1)
 			end,
-			imm = s_imm("tmp1"),
+			imm = s_imm("tmp1",a[2]),
 		})[a[1]],
 		({
 			reg = function(self)
@@ -327,6 +337,8 @@ for _,bus in ipairs {
 for _,addr in ipairs {
 	{"stack","sp"},
 	{"imm",1},
+	{"imm",2},
+	{"imm",3},
 } do
 for _,rel in ipairs {
 	0,
@@ -345,15 +357,16 @@ for _,ex in ipairs {
 	if ty == "fetch" and ((bus[2].bitwidth < vmbw) or (ex[1] == "zx")) then
 		insins(("fetch%s %s %s %s-rel to stack sp")
 			:format((bus[2].bitwidth < vmbw) and ex[1] or "",bus[1],table.concat(addr," "),rel),
-			addr[1] == "imm" and 1 or 0,
+			addr[1] == "imm" and addr[2] or 0,
 			({
 				stack = function(self)
 					return self:pop(self.sp,self.tmp1)
 				end,
-				imm = s_imm("tmp1")
+				imm = s_imm("tmp1",addr[2])
 			})[addr[1]],
 			function(self)
 				self.tmp1:add(rel==0 and zero or self[rel],self.tmp1)
+				return true
 			end,
 			function(self)
 				local ok, err = self:read(norptr(self.tmp1),to)
@@ -375,6 +388,7 @@ for _,ex in ipairs {
 			})[addr[1]],
 			function(self)
 				self.tmp1:add(rel==0 and zero or self[rel], self.tmp1)
+				return true
 			end,
 			function(self)
 				return self:pop(self.sp,self.tmp2)
@@ -397,12 +411,16 @@ for _,a in ipairs {
 	{"reg","sp"},
 	{"reg","bp"},
 	{"stack","sp"},
+	{"stack","bp"},
 } do
 for _,b in ipairs {
 	{"stack","sp"},
 	{"imm",1},
+	{"imm",2},
+	{"imm",3},
 } do (function()
 	if op == "sub" and b[1] == "imm" then return end
+	if a[1]=="stack" and a[2]=="bp" and b[1]~="imm" then return end
 	if opk > 2 then for _=1,1 do
 		if op == "band" then
 			if b[1] == "stack" and a[1] ~= "stack" then return end
@@ -412,12 +430,12 @@ for _,b in ipairs {
 	end end
 	local rega,regb = a[2],b[2]
 	insins(("%s %s to %s"):format(op,table.concat(b," "),table.concat(a," ")),
-		b[1]=="imm" and 1 or 0,
+		b[1]=="imm" and b[2] or 0,
 		({
 			stack = function(self)
 				return self:pop(self[regb],self.tmp2)
 			end,
-			imm = s_imm("tmp2"),
+			imm = s_imm("tmp2",b[2]),
 		})[b[1]],
 		({
 			reg = function(self)
@@ -443,7 +461,7 @@ for _,b in ipairs {
 		})[a[1]]
 	)
 end)() end end end
-insins("add out carry stack sp",
+insins("add carry stack sp",
 	function(self)
 		return self:pop(self.sp,self.tmp3)
 	end,
@@ -546,11 +564,7 @@ for _,op in ipairs {
 			as,bs,os = as~=0, bs==0, bs~=0
 			local over = as==bs and as~=os
 			local zero = self.tmp3[1] == 0
-			if not op[2](os,car,over,zero) then
-				self.tmp1[1] = 1
-				return true
-			end
-			self.tmp1[1] = 0
+			self.tmp1[1] = op[2](os,car,over,zero) and 1 or 0
 			return true
 		end,
 		function(self)
@@ -671,7 +685,7 @@ lib.step = trapped (-- in my basement )
 		if not ok then return ok, err end
 		mrbyte:movzx(self.opcode)
 		---[[
-		if self.debugging and norptr(self.opcode)<=255 and self.cycles<1 then
+		if self.debugging and norptr(self.opcode)<=255 then
 			local dstr = {self.cycles.." executing "
 			.. norptr(self.opcode) .. " " .. gdoc(self.opcode)
 			.. " at "..norptr(self.ip)}

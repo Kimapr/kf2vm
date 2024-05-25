@@ -1,6 +1,6 @@
 local vm = require "vm"
 
-local code=table.concat {
+--[[local code=table.concat {
 	vm.asms["mov imm 1 to stack sp"],"\127",
 	vm.asms["mov imm 1 to stack sp"],"\8",
 	vm.asms["mov imm 1 to stack sp"],"\4",
@@ -8,13 +8,47 @@ local code=table.concat {
 	vm.asms["add imm 1 to stack sp"],"\252",
 	vm.asms["sub stack sp to reg ip"],
 	"\255"
+}]]
+local asms = setmetatable({},{__index=function(s,k)return assert(vm.asms[k],k)end})
+local dup = asms["fetch word imm 1 sp-rel to stack sp"].."\0"
+local function call(pos)
+	return
+		asms["mov reg ip to stack bp"]..
+		asms["add imm 1 to stack bp"].."\4"..
+		asms["add imm 1 to reg ip"]..string.char(pos%256)
+end
+local ret = asms["mov stack bp to reg ip"]..""
+
+local code = table.concat {
+	asms["mov reg sp to stack sp"],
+	asms["mov stack sp to reg bp"],
+	"\0",
+	asms["add imm 2 to reg bp"],"\0","\192",
+	asms["mov imm 1 to stack sp"],"\12",
+	"\0",
+	call(2),
+	"\0","\255", -- invalid instruction
+
+	-- fact
+	dup,
+	asms["mov imm 1 to stack sp"],"\0",
+	asms["if!="],asms["add imm 1 to reg ip"],string.char(#dup+1+2+#ret),
+	dup,
+	asms["bxor stack sp to stack sp"],
+	asms["add imm 1 to stack sp"],"\1",
+	ret,
+	dup,
+	asms["add imm 1 to stack sp"],"\255",
+	call(-5 -2 -#dup -#ret -2 -1 -#dup -3 -2 -#dup),
+	asms["mul stack sp"],
+	ret
 }
+
 print((code:gsub('.',function(c)return ("%.2x"):format(string.byte(c))end)))
 
 local obj = vm.new({
 	code = code,
-	--clockrate = 10
-	clockrate=64*1024
+	clockrate=20--64*1024
 })
 
 obj.debugging = true
@@ -35,14 +69,21 @@ local pi=0
 local dt=0
 
 local ptime = socket.gettime()
+socket.sleep(0.5)
 while true do
 	dt = math.min(1/10,dt)
+	local ok,err=xpcall(function()
 	i=i+obj:update(dt)
+	end,debug.traceback)
+	if not ok then
+		err = err.."\n"..(obj.debug_str or "?").."\n"
+		error(err)
+	end
 	socket.sleep(0.001)
 	local clc=socket.gettime()
 	dt = clc - ptime
 	ptime = clc
-	if clc-cl > 1/10 then
+	--if clc-cl > 1/5 then
 		local clc=socket.gettime()
 		local pipc = obj.ip[1]
 		assert(({[0]=1,[true]=1})[os.execute("clear")])
@@ -51,5 +92,5 @@ while true do
 		print(obj.debug_str)
 		cl=clc pip=pipc
 		i=0
-	end
+--	end
 end
